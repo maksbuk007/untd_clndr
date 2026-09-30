@@ -23,7 +23,33 @@ document.addEventListener('DOMContentLoaded', () => {
 async function fetchEvents() {
     try {
         const response = await fetch(APPS_SCRIPT_URL);
-        eventsData = await response.json();
+        const rawData = await response.json();
+        
+        // Преобразуем "сырые" данные от Гугла в формат, понятный нашему календарю
+        eventsData = rawData.map(event => {
+            // 1. Фикс названия (понимает и "Название", и "Название события")
+            const title = event['Название'] || event['Название события'] || 'Без названия';
+            
+            // 2. Фикс даты (переводит машинный формат "2026-09-14T21..." в "15.09.2026")
+            let formattedDate = event['Дата'];
+            if (formattedDate) {
+                const d = new Date(formattedDate);
+                // Проверяем, что дата корректная
+                if (!isNaN(d.getTime())) {
+                    const day = String(d.getDate()).padStart(2, '0');
+                    const month = String(d.getMonth() + 1).padStart(2, '0');
+                    const year = d.getFullYear();
+                    formattedDate = `${day}.${month}.${year}`;
+                }
+            }
+
+            return {
+                ...event, // Сохраняем остальные поля (Время, Описание, Цвет)
+                'Название': title,
+                'Дата': formattedDate
+            };
+        });
+
         renderCalendar();
     } catch (error) {
         console.error('Ошибка загрузки данных:', error);
