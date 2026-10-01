@@ -210,6 +210,7 @@ body {
     pointer-events: none;
 }
 
+/* Обновляем контейнер модалки, чтобы длинный текст можно было листать */
 .modal-content {
     width: 90%;
     max-width: 500px;
@@ -217,6 +218,8 @@ body {
     position: relative;
     transform: scale(1);
     transition: transform 0.3s;
+    max-height: 85vh; /* Ограничиваем высоту до 85% экрана */
+    overflow-y: auto; /* Включаем прокрутку, если текста много */
 }
 
 .modal.hidden .modal-content {
@@ -243,7 +246,18 @@ body {
 }
 .modal-event-time { font-weight: bold; margin-bottom: 5px; }
 .modal-event-title { font-size: 18px; margin-bottom: 5px; }
-.modal-event-desc { font-size: 14px; opacity: 0.9; }
+/* Настраиваем красивое отображение описания */
+.modal-event-desc { 
+    font-size: 14px; 
+    opacity: 0.95; 
+    margin-top: 12px;
+    white-space: pre-wrap; /* МАГИЯ: заставляет HTML уважать переносы строк из Таблицы! */
+    word-wrap: break-word; /* Чтобы длинные ссылки не вылезали за края */
+    line-height: 1.5; /* Делаем межстрочный интервал больше для читаемости */
+    background: rgba(0, 0, 0, 0.15); /* Добавляем легкую темную подложку под текст */
+    padding: 15px;
+    border-radius: 8px;
+}
 
 /* Адаптив для телефонов */
 @media (max-width: 768px) {
@@ -324,5 +338,10 @@ body {
     
     .more-events { 
         display: none; 
+    }
+
+    .event-description {
+    white-space: pre-wrap;
+    line-height: 1.5; /* Заодно добавим воздуха между строками */
     }
 }
