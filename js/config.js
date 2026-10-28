@@ -10,7 +10,7 @@ export const CATEGORIES = {
   'планерка': { label: 'Планерка', color: '#2563eb' },
   'молодежка': { label: 'Молодёжка', color: '#059669' },
   'выезд': { label: 'Важное', color: '#dc2626' },
-  'баня': { label: 'Праздник', color: '#d97706' },
+  'баня': { label: 'Праздник', color: '#d906d2' },
   'встреча': { label: 'Встреча', color: '#7c3aed' },
 };
 export const DEFAULT_COLOR = '#64748b';
