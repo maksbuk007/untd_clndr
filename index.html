@@ -1,44 +1,84 @@
 <!DOCTYPE html>
-<html lang="ru" data-theme="light">
+<html lang="ru">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Расписание Мероприятий</title>
-    <link rel="stylesheet" href="style.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>Расписание мероприятий</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📅</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Unbounded:wght@500;600&display=swap">
+  <!-- Тема применяется до отрисовки, чтобы не было «мигания» -->
+  <script>try{document.documentElement.dataset.theme=localStorage.getItem('theme')||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light')}catch(e){}</script>
+  <link rel="stylesheet" href="css/style.css">
+  <script type="module" src="js/main.js"></script>
 </head>
 <body>
-    <!-- Анимированный фон -->
-    <div class="bg-animation"></div>
+  <div class="bg" aria-hidden="true"></div>
 
-    <div class="app-container glass">
-        <header class="header">
-            <div class="nav-month">
-                <button id="prev-month" class="icon-btn">&#10094;</button>
-                <h1 id="month-year">Загрузка...</h1>
-                <button id="next-month" class="icon-btn">&#10095;</button>
-            </div>
-            <button id="theme-toggle" class="icon-btn">🌙</button>
-        </header>
+  <main class="app glass">
+    <header class="top">
+      <div class="nav">
+        <button id="prev" class="btn icon" aria-label="Предыдущий месяц">
+          <svg class="ico" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg>
+        </button>
+        <h1 id="month" aria-live="polite">&nbsp;</h1>
+        <button id="next" class="btn icon" aria-label="Следующий месяц">
+          <svg class="ico" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>
+        </button>
+      </div>
 
-        <div class="calendar-wrapper">
-            <div class="weekdays">
-                <div>Пн</div><div>Вт</div><div>Ср</div><div>Чт</div><div>Пт</div><div>Сб</div><div>Вс</div>
-            </div>
-            <div id="calendar-grid" class="calendar-grid">
-                <!-- Дни будут генерироваться через JS -->
-            </div>
-        </div>
+      <div class="actions">
+        <button id="filter-btn" class="btn with-ico" aria-haspopup="dialog">
+          <svg class="ico" viewBox="0 0 24 24"><path d="M3 5h18l-7 8.5V19l-4 2v-7.5z"/></svg>
+          <span id="filter-label">Фильтр: все</span>
+        </button>
+        <button id="today" class="btn">Сегодня</button>
+        <button id="theme" class="theme-switch" role="switch" aria-checked="false" aria-label="Тёмная тема">
+          <svg class="ico sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+          <svg class="ico moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+          <span class="thumb"></span>
+        </button>
+      </div>
+    </header>
+
+    <div id="status" class="status" role="status" hidden>
+      <span></span>
+      <button id="retry" class="btn small" hidden>Повторить</button>
     </div>
 
-    <!-- Модальное окно для деталей дня -->
-    <div id="modal" class="modal hidden">
-        <div class="modal-content glass">
-            <button id="close-modal" class="close-btn">&times;</button>
-            <h2 id="modal-date">Дата</h2>
-            <div id="modal-events-list"></div>
+    <div class="layout">
+      <section class="cal">
+        <div class="weekdays" aria-hidden="true">
+          <div>Пн</div><div>Вт</div><div>Ср</div><div>Чт</div><div>Пт</div><div>Сб</div><div>Вс</div>
         </div>
-    </div>
+        <div id="grid" class="grid loading" aria-busy="true"></div>
+      </section>
 
-    <script src="script.js"></script>
+      <aside class="agenda">
+        <h2>Ближайшие события</h2>
+        <div id="agenda"></div>
+      </aside>
+    </div>
+  </main>
+
+  <!-- Окно дня -->
+  <dialog id="modal" aria-labelledby="modal-date">
+    <button class="close" data-close aria-label="Закрыть"><svg class="ico" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+    <h2 id="modal-date"></h2>
+    <div id="modal-list"></div>
+  </dialog>
+
+  <!-- Окно фильтра -->
+  <dialog id="filter-modal" aria-labelledby="filter-title">
+    <button class="close" data-close aria-label="Закрыть"><svg class="ico" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+    <h2 id="filter-title">Какие события показывать</h2>
+    <div id="filter-list" class="opts"></div>
+    <div class="dlg-actions">
+      <button id="filter-reset" class="btn">Показать все</button>
+      <button class="btn primary" data-close>Готово</button>
+    </div>
+  </dialog>
 </body>
 </html>
