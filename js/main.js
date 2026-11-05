@@ -1,35 +1,49 @@
 import { CACHE_TTL } from './config.js';
-import { fetchEvents, readCache, normalize } from './api.js';
+import { loadMonth, peek } from './store.js';
 import { renderGrid } from './calendar.js';
-import { filterGroups, updateFilterButton, renderFilterList, renderAgenda } from './panel.js';
+import { filterGroups, updateFilterButton, renderFilterList, renderNext, renderAgenda } from './panel.js';
 import { initDialog, showDialog, openDay } from './modal.js';
 import { initTheme } from './theme.js';
+import { toKey, groupByDay } from './dates.js';
 import { groupOf, capitalize } from './utils.js';
 
 const $ = id => document.getElementById(id);
 const monthName = new Intl.DateTimeFormat('ru-RU', { month: 'long' });
+const todayFmt = new Intl.DateTimeFormat('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' });
+const plural = new Intl.PluralRules('ru');
+const WORDS = { one: 'событие', few: 'события', many: 'событий', other: 'события' };
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const idle = window.requestIdleCallback ?? (fn => setTimeout(fn, 800));
 const monthStart = d => new Date(d.getFullYear(), d.getMonth(), 1);
 
-const state = { view: monthStart(new Date()), events: [], hidden: new Set(), loadedAt: 0 };
+// events — сетка месяца, upcoming — ближайшие для боковой панели
+const state = { view: monthStart(new Date()), events: [], upcoming: [], hidden: new Set(), loadedAt: 0, ready: false };
+let loadToken = 0;
 
-function groupByDay(events) {
-  const map = new Map();
-  for (const e of events) {
-    if (!map.has(e.key)) map.set(e.key, []);
-    map.get(e.key).push(e);
-  }
-  return map;
+const loaded = () => [...state.events, ...state.upcoming];
+const visibleOnly = list => list.filter(e => !state.hidden.has(groupOf(e)));
+
+function renderToday() {
+  const base = capitalize(todayFmt.format(new Date()));
+  const key = toKey(new Date());
+  const n = state.upcoming.filter(e => e.key === key).length;
+  $('today-line').textContent = state.ready ? `${base} · ${n ? `сегодня ${n} ${WORDS[plural.select(n)]}` : 'сегодня событий нет'}` : base;
 }
 
 function render({ animate = false } = {}) {
-  const visible = state.events.filter(e => !state.hidden.has(groupOf(e)));
+  const visible = visibleOnly(state.events);
+  const upcoming = visibleOnly(state.upcoming);
   const open = (date, events) => openDay($('modal'), date, events);
+  const openEvent = ev => open(ev.date, upcoming.filter(e => e.key === ev.key));
+  const rest = upcoming.slice(1, 6);
 
   $('month').textContent = `${capitalize(monthName.format(state.view))} ${state.view.getFullYear()}`;
-  updateFilterButton($('filter-btn'), $('filter-label'), filterGroups(state.events), state.hidden);
+  renderToday();
+  updateFilterButton($('filter-btn'), $('filter-label'), filterGroups(loaded()), state.hidden);
   renderGrid($('grid'), state.view, groupByDay(visible), open);
-  renderAgenda($('agenda'), visible, ev => open(ev.date, visible.filter(e => e.key === ev.key)));
+  renderNext($('next'), upcoming[0], openEvent);
+  renderAgenda($('agenda'), rest, openEvent);
+  $('more').hidden = !rest.length;
 
   if (animate && !reduceMotion) {
     $('grid').animate([{ opacity: 0, transform: 'translateY(8px)' }, { opacity: 1, transform: 'none' }], { duration: 220, easing: 'ease-out' });
@@ -38,11 +52,11 @@ function render({ animate = false } = {}) {
 
 /* ---------- Фильтр ---------- */
 function syncReset() {
-  $('filter-reset').disabled = !filterGroups(state.events).some(g => state.hidden.has(g.key));
+  $('filter-reset').disabled = !filterGroups(loaded()).some(g => state.hidden.has(g.key));
 }
 
 function buildFilterList() {
-  renderFilterList($('filter-list'), filterGroups(state.events), state.hidden, (key, checked) => {
+  renderFilterList($('filter-list'), filterGroups(loaded()), state.hidden, (key, checked) => {
     checked ? state.hidden.delete(key) : state.hidden.add(key);
     render();
     syncReset();
@@ -68,35 +82,45 @@ function setStatus(message, { retry = false } = {}) {
   $('retry').hidden = !retry;
 }
 
-async function load() {
+// Заранее подгружаем соседние месяцы — листание становится мгновенным
+function prefetch() {
+  idle(() => [-1, 1].forEach(d => loadMonth(new Date(state.view.getFullYear(), state.view.getMonth() + d, 1)).catch(() => {})));
+}
+
+async function load({ force = false } = {}) {
+  const token = ++loadToken; // если пользователь уже листает дальше, старый ответ игнорируется
   const grid = $('grid');
   grid.classList.toggle('loading', !state.events.length);
   grid.setAttribute('aria-busy', 'true');
   try {
-    state.events = normalize(await fetchEvents());
-    state.loadedAt = Date.now();
+    const data = await loadMonth(state.view, force);
+    if (token !== loadToken) return;
+    Object.assign(state, data, { loadedAt: Date.now(), ready: true });
     setStatus('');
+    prefetch();
   } catch (err) {
+    if (token !== loadToken) return;
     console.error('Не удалось загрузить события:', err);
-    setStatus(state.events.length ? 'Нет связи — показаны сохранённые данные' : 'Не удалось загрузить события. Проверьте интернет и повторите.', { retry: true });
-  } finally {
-    grid.classList.remove('loading');
-    grid.setAttribute('aria-busy', 'false');
-    render();
+    setStatus(state.ready ? 'Нет связи — показаны ранее загруженные данные' : 'Не удалось загрузить события. Проверьте интернет и повторите.', { retry: true });
   }
+  grid.classList.remove('loading');
+  grid.setAttribute('aria-busy', 'false');
+  render();
 }
 
 /* ---------- События интерфейса ---------- */
-function shift(delta) {
-  state.view = new Date(state.view.getFullYear(), state.view.getMonth() + delta, 1);
+function go(view) {
+  state.view = view;
   render({ animate: true });
+  load();
 }
+const shift = delta => go(new Date(state.view.getFullYear(), state.view.getMonth() + delta, 1));
 
 function bindEvents() {
   $('prev').addEventListener('click', () => shift(-1));
-  $('next').addEventListener('click', () => shift(1));
-  $('today').addEventListener('click', () => { state.view = monthStart(new Date()); render({ animate: true }); });
-  $('retry').addEventListener('click', load);
+  $('next-month').addEventListener('click', () => shift(1));
+  $('today').addEventListener('click', () => go(monthStart(new Date())));
+  $('retry').addEventListener('click', () => load({ force: true }));
   $('filter-btn').addEventListener('click', openFilter);
   $('filter-reset').addEventListener('click', resetFilter);
 
@@ -120,7 +144,7 @@ function bindEvents() {
 
   // Вернулись на вкладку спустя время — тихо обновляем данные
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden && Date.now() - state.loadedAt > CACHE_TTL) load();
+    if (!document.hidden && Date.now() - state.loadedAt > CACHE_TTL) load({ force: true });
   });
 }
 
@@ -129,8 +153,7 @@ initDialog($('modal'));
 initDialog($('filter-modal'));
 bindEvents();
 
-// Мгновенно показываем сохранённые данные, затем обновляем с сервера
-const cached = readCache();
-if (cached) state.events = normalize(cached.raw);
+const warm = peek(state.view); // показываем сохранённый ответ сразу, пока идёт запрос
+if (warm) Object.assign(state, warm, { ready: true });
 render();
 load();

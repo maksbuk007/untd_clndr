@@ -1,0 +1,10 @@
+{
+  "name": "events-calendar",
+  "private": true,
+  "type": "module",
+  "engines": { "node": "22.x" },
+  "dependencies": {
+    "@google-cloud/firestore": "^7.11.0",
+    "google-auth-library": "^9.15.0"
+  }
+}

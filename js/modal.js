@@ -1,11 +1,11 @@
-import { el, colorOf, linkify, capitalize } from './utils.js';
+import { el, colorOf, linkify, capitalize, whenText } from './utils.js';
 
 const titleFmt = new Intl.DateTimeFormat('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' });
 
 function card(ev) {
   const item = el('article', 'ev');
   item.style.setProperty('--c', colorOf(ev.color));
-  item.append(el('div', 'ev-time', ev.time || 'Весь день'), el('h3', 'ev-title', ev.title));
+  item.append(el('div', 'ev-time', whenText(ev)), el('h3', 'ev-title', ev.title));
   if (ev.description) {
     const desc = el('p', 'ev-desc');
     linkify(ev.description, desc);
