@@ -1,5 +1,5 @@
 import { CATEGORIES, DEFAULT_COLOR } from './config.js';
-import { parseDate } from './dates.js';
+import { calendarToday, daysBetween, parseDate, toKey } from './dates.js';
 
 export function el(tag, cls, text) {
   const node = document.createElement(tag);
@@ -13,7 +13,7 @@ export const capitalize = s => s.charAt(0).toUpperCase() + s.slice(1);
 /* ---- Категории и цвета ---- */
 const PALETTE = ['#2563eb', '#059669', '#dc2626', '#d97706', '#7c3aed', '#0891b2', '#db2777', '#65a30d'];
 const DEFAULTS = { ...CATEGORIES };
-const isHex = c => /^#[0-9a-f]{3,8}$/i.test(c);
+const isHex = c => /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(c);
 
 function hashColor(s) {
   let h = 0;
@@ -24,31 +24,40 @@ function hashColor(s) {
 // Категории из базы заменяют стандартные (если в базе пусто — остаются стандартные)
 export function setCategories(list) {
   for (const k of Object.keys(CATEGORIES)) delete CATEGORIES[k];
-  Object.assign(CATEGORIES, list.length ? Object.fromEntries(list.map(c => [c.id, { label: c.label, color: c.color }])) : DEFAULTS);
+  for (const c of list) {
+    if (typeof c?.id !== 'string' || typeof c.label !== 'string' || !c.label) continue;
+    CATEGORIES[c.id.toLowerCase()] = { label: c.label, color: isHex(c.color) ? c.color : hashColor(c.id) };
+  }
+  if (!Object.keys(CATEGORIES).length) Object.assign(CATEGORIES, DEFAULTS);
 }
 
 export const colorOf = c => (isHex(c) ? c : CATEGORIES[c]?.color ?? (c ? hashColor(c) : DEFAULT_COLOR));
-export const groupOf = ev => (ev.color && !isHex(ev.color) ? ev.color : 'другое');
+export const groupOf = ev => ev.category || (ev.color && !isHex(ev.color) ? ev.color : 'другое');
 export const groupColor = g => (g === 'другое' ? DEFAULT_COLOR : colorOf(g));
 export const groupLabel = g => CATEGORIES[g]?.label ?? capitalize(g);
 
 /* ---- Событие: ответ сервера → удобный объект ---- */
 export function toEvent(x) {
-  const date = parseDate(x.date);
+  const date = parseDate(x?.date);
   if (!date) return null;
+  const key = toKey(date);
+  const endDate = parseDate(x.endDate);
+  const category = String(x.category || '').toLowerCase();
   return {
-    id: x.id, key: x.date, endKey: x.endDate || x.date, date,
-    title: x.title || 'Без названия', time: x.time || '', endTime: x.endTime || '',
-    description: x.description || '', category: x.category || '',
-    color: String(x.color || x.category || '').toLowerCase(),
-    seriesId: x.seriesId || '', updatedByName: x.updatedByName || '',
+    id: String(x.id || ''), key, endKey: endDate > date ? toKey(endDate) : key, date,
+    title: String(x.title || 'Без названия'), time: String(x.time || ''), endTime: String(x.endTime || ''),
+    description: String(x.description || ''), category,
+    color: String(x.color || category).toLowerCase(),
+    seriesId: String(x.seriesId || ''), updatedByName: String(x.updatedByName || ''),
   };
 }
+
+export const compareEvents = (a, b) => a.key.localeCompare(b.key) || a.time.localeCompare(b.time)
+  || a.title.localeCompare(b.title, 'ru') || a.id.localeCompare(b.id);
 
 /* ---- Подписи ---- */
 const shortFmt = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short' });
 const rtf = new Intl.RelativeTimeFormat('ru', { numeric: 'auto' });
-const startOfDay = d => new Date(d.getFullYear(), d.getMonth(), d.getDate());
 
 // «19:00 – 21:00», «Весь день», «4 нояб. – 12 нояб.»
 export function whenText(ev) {
@@ -59,7 +68,7 @@ export function whenText(ev) {
 export const whenFull = ev => (ev.endKey !== ev.key ? whenText(ev) : `${shortFmt.format(ev.date)}, ${whenText(ev)}`);
 
 // «Сегодня», «Завтра», «Через 6 дней»
-export const relDay = date => capitalize(rtf.format(Math.round((startOfDay(date) - startOfDay(new Date())) / 864e5), 'day'));
+export const relDay = (date, today = calendarToday()) => capitalize(rtf.format(daysBetween(toKey(today), toKey(date)), 'day'));
 
 // Текст со ссылками. Только через DOM, без innerHTML — безопасно.
 export function linkify(text, parent) {

@@ -1,4 +1,5 @@
 import { el, colorOf, linkify, capitalize, whenText } from './utils.js';
+import { calendarToday } from './dates.js';
 
 const titleFmt = new Intl.DateTimeFormat('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' });
 
@@ -27,13 +28,13 @@ export function initDialog(dialog) {
 }
 
 export function showDialog(dialog) {
-  dialog.showModal();
+  if (!dialog.open) dialog.showModal();
   dialog.scrollTop = 0;
   dialog.focus({ preventScroll: true });
 }
 
 export function openDay(dialog, date, events) {
-  const year = date.getFullYear() !== new Date().getFullYear() ? `, ${date.getFullYear()}` : '';
+  const year = date.getFullYear() !== calendarToday().getFullYear() ? `, ${date.getFullYear()}` : '';
   dialog.querySelector('#modal-date').textContent = capitalize(titleFmt.format(date)) + year;
   dialog.querySelector('#modal-list').replaceChildren(...events.map(card));
   showDialog(dialog);

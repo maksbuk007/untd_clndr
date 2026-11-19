@@ -1,8 +1,8 @@
 // Общие помощники панели управления
 import { api } from './api.js';
+import { showDialog } from './modal.js';
 
 const $ = id => document.getElementById(id);
-export const app = { reload() {} }; // admin.js подставляет сюда «обновить вкладку»
 
 // h('div', { class: 'x', onclick: fn }, ...дети) — безопасное создание DOM без innerHTML
 export function h(tag, props = {}, ...kids) {
@@ -32,8 +32,21 @@ export async function call(path, opts) {
 
 // Блок, который показывает индикатор загрузки, пока готовится содержимое
 export function lazy(build) {
-  const box = h('div', {}, loader());
-  build().then(node => box.replaceChildren(node)).catch(e => { fail(e); box.replaceChildren(h('p', { class: 'empty' }, 'Не удалось загрузить данные')); });
+  const box = h('div');
+  async function load() {
+    box.replaceChildren(loader());
+    box.setAttribute('aria-busy', 'true');
+    try {
+      const node = await build();
+      if (box.isConnected) box.replaceChildren(node);
+    } catch (e) {
+      if (!box.isConnected) return;
+      if (e.status === 401) return fail(e);
+      box.replaceChildren(h('div', { class: 'status', role: 'status' }, h('span', {}, e.message),
+        h('button', { class: 'btn small', type: 'button', onclick: load }, 'Повторить')));
+    } finally { box.setAttribute('aria-busy', 'false'); }
+  }
+  load();
   return box;
 }
 
@@ -42,9 +55,16 @@ export function toast(msg, bad = false) {
   const t = $('toast');
   t.textContent = msg;
   t.classList.toggle('bad', bad);
-  if (!t.matches(':popover-open')) t.showPopover?.();
+  if (t.showPopover) {
+    if (!t.matches(':popover-open')) t.showPopover();
+  } else {
+    t.classList.add('toast-fallback');
+  }
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.hidePopover?.(), 3500);
+  toastTimer = setTimeout(() => {
+    t.hidePopover?.();
+    t.classList.remove('toast-fallback');
+  }, 3500);
 }
 export function fail(e) {
   if (e?.status === 401) return location.reload(); // сессия закончилась — покажем вход
@@ -58,9 +78,9 @@ export function openDlg(title, ...body) {
   const dlg = $('dlg');
   const x = h('button', { class: 'close', type: 'button', 'aria-label': 'Закрыть', onclick: closeDlg });
   x.innerHTML = '<svg class="ico" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>'; // статичная иконка
-  dlg.replaceChildren(x, h('h2', {}, title), ...body);
-  if (!dlg.open) dlg.showModal();
-  dlg.focus({ preventScroll: true });
+  dlg.replaceChildren(x, h('h2', { id: 'dlg-title' }, title), ...body);
+  dlg.setAttribute('aria-labelledby', 'dlg-title');
+  showDialog(dlg);
 }
 
 export const confirmDlg = (text, okLabel = 'Удалить', extra = null) => new Promise(resolve => {

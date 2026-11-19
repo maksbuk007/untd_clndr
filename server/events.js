@@ -3,16 +3,21 @@ import { bad } from './http.js';
 
 export const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 export const MAX_SPAN_DAYS = 60;
+const PUBLIC_FIELDS = ['title', 'date', 'endDate', 'time', 'endTime', 'description', 'category', 'color'];
+const STAFF_FIELDS = [...PUBLIC_FIELDS, 'seriesId', 'updatedByName'];
+
+const text = value => typeof value === 'string' ? value : '';
+export const eventFields = staff => staff ? STAFF_FIELDS : PUBLIC_FIELDS;
 
 // Проверка и очистка данных события. Любые ошибки — понятным текстом.
 export function cleanEvent(b) {
-  const title = String(b.title ?? '').trim();
-  const date = String(b.date ?? '');
-  let endDate = String(b.endDate ?? '');
-  const time = String(b.time ?? '');
-  const endTime = time ? String(b.endTime ?? '') : '';
-  const description = String(b.description ?? '').trim();
-  const category = String(b.category ?? '').trim().toLowerCase();
+  const title = text(b.title).trim();
+  const date = text(b.date);
+  let endDate = text(b.endDate);
+  const time = text(b.time);
+  const endTime = time ? text(b.endTime) : '';
+  const description = text(b.description).trim();
+  const category = text(b.category).trim().toLowerCase();
 
   if (!title || title.length > 200) bad('Название: от 1 до 200 символов');
   if (!isRealDate(date)) bad('Укажите корректную дату');
@@ -42,10 +47,7 @@ export function expand(data, repeat) {
 
 // Что отдаётся наружу. Для публики — только безопасные поля.
 export function shapeEvent(id, d, staff = false) {
-  const e = {
-    id, title: d.title, date: d.date, endDate: d.endDate || '', time: d.time || '', endTime: d.endTime || '',
-    description: d.description || '', category: d.category || '', color: d.color || '',
-  };
-  if (staff) { e.seriesId = d.seriesId || ''; e.updatedByName = d.updatedByName || ''; }
-  return e;
+  const event = { id };
+  for (const field of eventFields(staff)) event[field] = text(d[field]);
+  return event;
 }

@@ -2,16 +2,16 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
   <meta name="color-scheme" content="light dark">
   <meta name="robots" content="noindex">
   <title>Панель управления</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Unbounded:wght@500;600&display=swap">
   <script src="js/boot.js"></script>
   <link rel="stylesheet" href="css/style.css">
   <link rel="stylesheet" href="css/admin.css">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Unbounded:wght@500;600&display=swap" media="print" onload="this.media='all'">
   <script type="module" src="js/admin.js"></script>
 </head>
 <body>
@@ -28,15 +28,15 @@
         </div>
         <button id="logout" class="btn" hidden>Выйти</button>
         <button id="theme" class="theme-switch" role="switch" aria-checked="false" aria-label="Тёмная тема">
-          <svg class="ico sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
-          <svg class="ico moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+          <svg class="ico sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+          <svg class="ico moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
           <span class="thumb"></span>
         </button>
       </div>
     </header>
 
-    <section id="screen-boot" class="center">
-      <div id="boot-spin" class="spinner big"></div>
+    <section id="screen-boot" class="center" role="status">
+      <div id="boot-spin" class="spinner big" aria-hidden="true"></div>
       <p id="boot-text" class="muted">Загружаем панель управления…</p>
     </section>
 
@@ -44,7 +44,7 @@
       <h2>Вход для модераторов и администраторов</h2>
       <p>Войдите аккаунтом Google. Новые пользователи получают доступ после подтверждения администратором.</p>
       <div id="gsi" class="gsi"></div>
-      <div id="login-spin" class="loader" hidden><div class="spinner"></div><span>Входим…</span></div>
+      <div id="login-spin" class="loader" role="status" hidden><div class="spinner" aria-hidden="true"></div><span>Входим…</span></div>
       <p id="login-error" class="form-error" role="alert"></p>
     </section>
 
@@ -55,13 +55,13 @@
     </section>
 
     <section id="screen-main" hidden>
-      <nav id="tabs" class="tabs">
-        <button class="tab" data-tab="calendar" aria-selected="true">Календарь</button>
-        <button class="tab" data-tab="list" aria-selected="false">Список</button>
-        <button class="tab admin-only" data-tab="users" aria-selected="false">Пользователи</button>
-        <button class="tab admin-only" data-tab="cats" aria-selected="false">Категории</button>
-        <button class="tab admin-only" data-tab="logs" aria-selected="false">Журнал</button>
-        <button class="tab admin-only" data-tab="import" aria-selected="false">Импорт</button>
+      <nav id="tabs" class="tabs" aria-label="Разделы панели управления">
+        <button class="tab" data-tab="calendar" aria-controls="pane" aria-pressed="true">Календарь</button>
+        <button class="tab" data-tab="list" aria-controls="pane" aria-pressed="false">Список</button>
+        <button class="tab admin-only" data-tab="users" aria-controls="pane" aria-pressed="false">Пользователи</button>
+        <button class="tab admin-only" data-tab="cats" aria-controls="pane" aria-pressed="false">Категории</button>
+        <button class="tab admin-only" data-tab="logs" aria-controls="pane" aria-pressed="false">Журнал</button>
+        <button class="tab admin-only" data-tab="import" aria-controls="pane" aria-pressed="false">Импорт</button>
       </nav>
       <div id="pane"></div>
     </section>

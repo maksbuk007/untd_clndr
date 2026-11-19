@@ -1,43 +1,62 @@
-// Загрузка месяца для публичного календаря: память → localStorage → быстрый CDN
 import { api } from './api.js';
-import { toKey } from './dates.js';
-import { setCategories, toEvent } from './utils.js';
+import { monthKey } from './dates.js';
+import { compareEvents, toEvent } from './utils.js';
 
-const TTL = 60_000;
-const mem = new Map();
-const keyOf = v => `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, '0')}`;
-const byDate = (a, b) => a.key.localeCompare(b.key) || a.time.localeCompare(b.time);
-const list = arr => arr.map(toEvent).filter(Boolean).sort(byDate);
+export const MONTH_TTL = 60_000;
+const MAX_AGE = 7 * 24 * 60 * 60_000;
+const MAX_MONTHS = 8;
+const STORAGE_KEY = 'calendar-months-v1';
+const pending = new Map();
 
-function apply(raw) {
-  setCategories(raw.categories ?? []);
-  return { events: list(raw.events), upcoming: list(raw.upcoming) };
+function readMonths() {
+  try { return new Map(JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]')); }
+  catch { return new Map(); }
 }
 
-// Мгновенная отрисовка из сохранённого ответа, пока идёт запрос
-export function peek(view) {
-  try {
-    const saved = localStorage.getItem('cal:' + keyOf(view));
-    return saved ? apply(JSON.parse(saved)) : null;
-  } catch { return null; }
+const months = readMonths();
+const list = arr => arr.map(toEvent).filter(Boolean).sort(compareEvents);
+
+function snapshot(entry, day) {
+  if (!entry || Date.now() - entry.fetchedAt > MAX_AGE) return null;
+  const { raw, fetchedAt } = entry;
+  if (!Array.isArray(raw?.events) || !Array.isArray(raw.upcoming)) return null;
+  const sameDay = day === entry.day;
+  return {
+    categories: Array.isArray(raw.categories) ? raw.categories : [],
+    events: list(raw.events),
+    upcoming: sameDay ? list(raw.upcoming) : null,
+    todayCount: sameDay && Number.isInteger(raw.todayCount) ? raw.todayCount : null,
+    fetchedAt: sameDay ? fetchedAt : 0,
+  };
 }
 
-async function fetchRaw(key, force) {
-  const first = window.__first; // запрос, начатый ещё в boot.js
-  if (!force && first && first.key === key && !first.used) {
-    first.used = true;
-    try { const r = await first.promise; if (r.ok) return await r.json(); } catch { /* запасной путь ниже */ }
+export function peek(view, day) {
+  return snapshot(months.get(monthKey(view)), day);
+}
+
+export async function loadMonth(view, day, { force = false } = {}) {
+  const key = monthKey(view);
+  const requestKey = `${key}:${day}`;
+  if (pending.has(requestKey)) return pending.get(requestKey);
+  const cached = months.get(key);
+  if (!force && day === cached?.day && Date.now() - cached.fetchedAt < MONTH_TTL) {
+    const hit = snapshot(cached, day);
+    if (hit) return hit;
   }
-  return api(`/api/calendar?month=${key}&t=${toKey(new Date())}`, { cache: force ? 'reload' : 'default' });
-}
 
-export async function loadMonth(view, force = false) {
-  const key = keyOf(view);
-  const hit = mem.get(key);
-  if (!force && hit && Date.now() - hit.t < TTL) { setCategories(hit.raw.categories ?? []); return hit.data; }
-  const raw = await fetchRaw(key, force);
-  const data = apply(raw);
-  mem.set(key, { t: Date.now(), raw, data });
-  try { localStorage.setItem('cal:' + key, JSON.stringify(raw)); } catch { /* ignore */ }
-  return data;
+  const query = new URLSearchParams({ month: key, t: day });
+  const request = api(`/api/calendar?${query}`, { cache: force ? 'reload' : 'default' }).then(raw => {
+    const entry = { day, raw, fetchedAt: Date.now() };
+    const data = snapshot(entry, day);
+    if (!data) throw new Error('Некорректный ответ календаря');
+    if (!months.has(key) || months.get(key).day <= day) {
+      months.delete(key);
+      months.set(key, entry);
+      while (months.size > MAX_MONTHS) months.delete(months.keys().next().value);
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify([...months])); } catch { /* кэш в памяти остаётся доступным */ }
+    }
+    return data;
+  }).finally(() => pending.delete(requestKey));
+  pending.set(requestKey, request);
+  return request;
 }

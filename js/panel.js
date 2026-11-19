@@ -35,12 +35,13 @@ export function renderFilterList(root, groups, hidden, onToggle) {
 }
 
 // Крупная карточка ближайшего события
-export function renderNext(root, ev, onSelect) {
-  if (!ev) return root.replaceChildren(el('p', 'empty', 'Ближайших событий нет'));
+export function renderNext(root, ev, onSelect, { today, emptyMessage }) {
+  if (!ev) return emptyMessage ? root.replaceChildren(el('p', 'empty', emptyMessage)) : root.replaceChildren();
   const card = el('button', 'next-card');
   card.type = 'button';
   card.style.setProperty('--c', colorOf(ev.color));
-  card.append(el('span', 'next-label', `Ближайшее · ${relDay(ev.date)}`), el('span', 'next-title', ev.title), el('span', 'next-when', whenFull(ev)));
+  const label = ev.date < today ? 'Продолжается сегодня' : `Ближайшее · ${relDay(ev.date, today)}`;
+  card.append(el('span', 'next-label', label), el('span', 'next-title', ev.title), el('span', 'next-when', whenFull(ev)));
   card.addEventListener('click', () => onSelect(ev));
   root.replaceChildren(card);
 }

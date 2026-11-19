@@ -9,5 +9,5 @@ export const fail = (res, status, message) => send(res, status, { error: message
 export function handleError(res, e) {
   if (e instanceof HttpError) return fail(res, e.status, e.message);
   console.error(e);
-  return fail(res, 500, 'Ошибка сервера. Проверьте настройки переменных окружения.');
+  return fail(res, 500, 'Ошибка сервера. Попробуйте ещё раз.');
 }

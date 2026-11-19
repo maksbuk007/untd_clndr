@@ -1,21 +1,29 @@
 // Всё управление: события, пользователи, категории, журнал, импорт. Права проверяются здесь, на сервере.
-import { FieldPath } from '@google-cloud/firestore';
-import { getDb, FieldValue } from '../../server/db.js';
+import { getDb, FieldPath, FieldValue, Timestamp } from '../../server/db.js';
 import { guard } from '../../server/auth.js';
 import { HttpError, bad, send, handleError } from '../../server/http.js';
-import { cleanEvent, expand, shapeEvent, TIME } from '../../server/events.js';
-import { monthData } from '../../server/calendar.js';
-import { isRealDate, parseDate, formatTime, toKey } from '../../js/dates.js';
+import { cleanEvent, expand, eventFields, shapeEvent, TIME } from '../../server/events.js';
+import { clearCategoryReads, clearEventReads, monthData, readCategories } from '../../server/calendar.js';
+import { isCalendarMonth, isRealDate, parseDate, formatTime, toKey } from '../../js/dates.js';
 import { CATEGORIES } from '../../js/config.js';
 
 const STAFF = ['moderator', 'admin'];
+const ADMIN = ['admin'];
 const ROLES = ['pending', 'moderator', 'admin'];
 const PAGE = 40;
 const PALETTE = ['#2563eb', '#059669', '#dc2626', '#d97706', '#7c3aed', '#0891b2', '#db2777', '#65a30d'];
 
-const slug = s => String(s).trim().toLowerCase().replace(/\//g, ' ').slice(0, 60);
+const slug = s => s.toLowerCase().replace(/\//g, ' ').slice(0, 60).trim();
 const hash = s => { let h = 5381; for (const c of s) h = ((h << 5) + h + c.charCodeAt(0)) >>> 0; return h; };
-const day = s => (isRealDate(String(s)) ? String(s) : bad('Некорректная дата'));
+const day = s => (typeof s === 'string' && isRealDate(s) ? s : bad('Некорректная дата'));
+
+function documentId(value) {
+  if (typeof value !== 'string' || !value.trim() || Buffer.byteLength(value, 'utf8') > 1500
+    || value.includes('/') || value === '.' || value === '..' || /^__.*__$/.test(value)) {
+    bad('Некорректный идентификатор');
+  }
+  return value;
+}
 
 function log(batch, db, me, action, target, details = '') {
   batch.set(db.collection('logs').doc(), {
@@ -24,22 +32,29 @@ function log(batch, db, me, action, target, details = '') {
   });
 }
 const stamp = me => ({ updatedBy: me.id, updatedByName: me.name, updatedAt: FieldValue.serverTimestamp() });
-const notAllowed = () => { throw new HttpError(405, 'Метод не поддерживается'); };
+const retainedColor = (current, category) => (current.category || '') === category ? current.color || '' : '';
 
 /* ---------- События ---------- */
 async function events(req, db, me) {
   const col = db.collection('events');
-  const { id, scope = 'one' } = req.query;
   const b = req.body ?? {};
 
   if (req.method === 'GET') {
     const past = req.query.past === '1';
     const dir = past ? 'desc' : 'asc';
-    let q = col.where('date', past ? '<' : '>=', day(req.query.today)).orderBy('date', dir).orderBy(FieldPath.documentId(), dir);
-    if (req.query.afterDate) q = q.startAfter(day(req.query.afterDate), String(req.query.afterId ?? ''));
-    const docs = (await q.limit(PAGE).get()).docs;
-    const last = docs.at(-1)?.data();
-    return { items: docs.map(d => shapeEvent(d.id, d.data(), true)), next: docs.length === PAGE ? { date: last.date, id: docs.at(-1).id } : null };
+    let q = col.where('date', past ? '<' : '>=', day(req.query.today))
+      .orderBy('date', dir).orderBy(FieldPath.documentId(), dir).select(...eventFields(true));
+    if (req.query.afterDate !== undefined || req.query.afterId !== undefined) {
+      q = q.startAfter(day(req.query.afterDate), documentId(req.query.afterId));
+    }
+    const [snap, cats] = await Promise.all([
+      q.limit(PAGE + 1).get(),
+      req.query.includeCategories === '1' ? readCategories() : null,
+    ]);
+    const docs = snap.docs.slice(0, PAGE);
+    const last = docs.at(-1);
+    const next = snap.docs.length > PAGE ? { date: last.get('date'), id: last.id } : null;
+    return { items: docs.map(d => shapeEvent(d.id, d.data(), true)), next, ...(cats ? { categories: cats } : {}) };
   }
 
   if (req.method === 'POST') {
@@ -52,112 +67,161 @@ async function events(req, db, me) {
     }
     log(batch, db, me, 'create', data.title, list.length > 1 ? `${list.length} повторов, с ${data.date}` : data.date);
     await batch.commit();
+    clearEventReads();
     return { created: list.length };
   }
 
-  if (req.method === 'PUT' || req.method === 'DELETE') {
-    const ref = col.doc(String(id));
-    const snap = await ref.get();
+  const ref = col.doc(documentId(req.query.id));
+  const scope = req.query.scope ?? 'one';
+  if (scope !== 'one' && scope !== 'following') bad('Некорректная область изменения');
+  const data = req.method === 'PUT' ? cleanEvent(b) : null;
+  const count = await db.runTransaction(async transaction => {
+    const snap = await transaction.get(ref);
     if (!snap.exists) throw new HttpError(404, 'Событие не найдено');
     const cur = snap.data();
-    const batch = db.batch();
-    let count = 1;
     const series = scope === 'following' && cur.seriesId
-      ? (await col.where('seriesId', '==', cur.seriesId).get()).docs.filter(d => d.id !== snap.id && d.data().date > cur.date)
+      ? (await transaction.get(col.where('seriesId', '==', cur.seriesId).select('date', 'endDate', 'category', 'color')))
+        .docs.filter(d => d.id !== snap.id && d.get('date') > cur.date)
       : [];
+    const affected = series.length + 1;
 
-    if (req.method === 'PUT') {
-      const data = cleanEvent(b);
-      batch.update(ref, { ...data, color: '', ...stamp(me) });
-      for (const d of series) {
-        batch.update(d.ref, { title: data.title, time: data.time, endTime: data.endTime, description: data.description, category: data.category, ...stamp(me) });
+    if (data) {
+      const { title, time, endTime, description, category } = data;
+      if (endTime && endTime <= time && series.some(d => !d.get('endDate') || d.get('endDate') === d.get('date'))) {
+        bad('Время окончания должно быть позже начала у всех однодневных событий серии');
       }
-      count += series.length;
-      log(batch, db, me, 'update', data.title, count > 1 ? `${count} событий серии` : data.date);
+      transaction.update(ref, { ...data, color: retainedColor(cur, category), ...stamp(me) });
+      for (const d of series) {
+        transaction.update(d.ref, { title, time, endTime, description, category, color: retainedColor(d.data(), category), ...stamp(me) });
+      }
+      log(transaction, db, me, 'update', title, affected > 1 ? `${affected} событий серии` : data.date);
     } else {
-      batch.delete(ref);
-      series.forEach(d => batch.delete(d.ref));
-      count += series.length;
-      log(batch, db, me, 'delete', cur.title, count > 1 ? `${count} событий серии` : cur.date);
+      transaction.delete(ref);
+      series.forEach(d => transaction.delete(d.ref));
+      log(transaction, db, me, 'delete', cur.title, affected > 1 ? `${affected} событий серии` : cur.date);
     }
-    await batch.commit();
-    return { count };
-  }
-  return notAllowed();
+    return affected;
+  });
+  clearEventReads();
+  return { count };
 }
 
-/* ---------- Месяц для календаря в панели (без кэша, всегда свежее) ---------- */
+/* ---------- Месяц для календаря в панели ---------- */
 async function month(req) {
-  const m = String(req.query.month ?? '');
-  if (!/^20[2-9]\d-(0[1-9]|1[0-2])$/.test(m)) bad('Некорректный месяц');
-  return monthData(m, day(req.query.today), true);
+  const m = req.query.month;
+  if (typeof m !== 'string' || !isCalendarMonth(m)) bad('Некорректный месяц');
+  return monthData(m, undefined, true);
 }
 
 /* ---------- Категории ---------- */
 async function categories(req, db, me) {
   const col = db.collection('categories');
-  if (req.method === 'GET') return { items: (await col.get()).docs.map(d => ({ id: d.id, ...d.data() })) };
-  if (me.role !== 'admin') throw new HttpError(403, 'Недостаточно прав');
+  if (req.method === 'GET') return { items: await readCategories({ fresh: true }) };
 
   const b = req.body ?? {};
   const batch = db.batch();
+  let category;
   if (req.method === 'POST' || req.method === 'PUT') {
     const label = String(b.label ?? '').trim().slice(0, 60);
     const color = String(b.color ?? '');
     if (!label) bad('Введите название категории');
     if (!/^#[0-9a-fA-F]{6}$/.test(color)) bad('Некорректный цвет');
-    batch.set(col.doc(req.method === 'PUT' ? slug(req.query.id) : slug(label)), { label, color });
+    const id = documentId(req.method === 'PUT' ? req.query.id : slug(label));
+    category = { id, label, color };
+    batch.set(col.doc(id), { label, color });
     log(batch, db, me, 'cat-save', label, color);
-  } else if (req.method === 'DELETE') {
-    batch.delete(col.doc(slug(req.query.id)));
-    log(batch, db, me, 'cat-del', req.query.id);
-  } else return notAllowed();
+  } else {
+    const id = documentId(req.query.id);
+    batch.delete(col.doc(id));
+    log(batch, db, me, 'cat-del', id);
+  }
   await batch.commit();
-  return { ok: true };
+  clearCategoryReads();
+  return category ? { ok: true, category } : { ok: true };
 }
 
 /* ---------- Пользователи ---------- */
 async function users(req, db, me) {
   const col = db.collection('users');
-  if (req.method === 'GET') return { items: (await col.get()).docs.map(d => ({ id: d.id, ...d.data(), createdAt: undefined })) };
-
-  const id = String(req.query.id ?? '');
+  if (req.method === 'GET') {
+    const snap = await col.select('name', 'email', 'photo', 'role').get();
+    return { items: snap.docs.map(d => ({ id: d.id, ...d.data() })) };
+  }
+  const id = documentId(req.query.id);
   if (id === me.id) bad('Нельзя менять собственную учётную запись');
-  const snap = await col.doc(id).get();
-  if (!snap.exists) throw new HttpError(404, 'Пользователь не найден');
-  const u = snap.data();
-  const batch = db.batch();
-
-  if (req.method === 'PATCH') {
-    const role = String(req.body?.role ?? '');
-    if (!ROLES.includes(role)) bad('Неизвестная роль');
-    batch.update(snap.ref, { role });
-    log(batch, db, me, 'role', u.name, `${u.role} → ${role}`);
-  } else if (req.method === 'DELETE') {
-    batch.delete(snap.ref);
-    log(batch, db, me, 'user-del', u.name, u.email);
-  } else return notAllowed();
-  await batch.commit();
+  const role = req.body?.role;
+  if (req.method === 'PATCH' && !ROLES.includes(role)) bad('Неизвестная роль');
+  await db.runTransaction(async transaction => {
+    const ref = col.doc(id);
+    const snap = await transaction.get(ref);
+    if (!snap.exists) throw new HttpError(404, 'Пользователь не найден');
+    const u = snap.data();
+    const name = u.name || u.email || id;
+    if (req.method === 'PATCH') {
+      if (role === u.role) return;
+      transaction.update(ref, { role });
+      log(transaction, db, me, 'role', name, `${u.role} → ${role}`);
+    } else {
+      transaction.delete(ref);
+      log(transaction, db, me, 'user-del', name, u.email);
+    }
+  });
   return { ok: true };
 }
 
 /* ---------- Журнал ---------- */
-async function logs() {
-  const snap = await getDb().collection('logs').orderBy('ts', 'desc').limit(100).get();
-  return { items: snap.docs.map(d => { const x = d.data(); return { ...x, ts: x.ts?.toMillis() ?? 0, uid: undefined }; }) };
+const LOG_PAGE = 20;
+
+function logCursor(after) {
+  if (typeof after === 'string' && after.length <= 4096 && /^[A-Za-z0-9_-]+$/.test(after)) {
+    try {
+      const cursor = JSON.parse(Buffer.from(after, 'base64url').toString('utf8'));
+      if (Array.isArray(cursor) && cursor.length === 3) {
+        const [seconds, nanoseconds, id] = cursor;
+        const time = seconds === null && nanoseconds === null ? null : new Timestamp(seconds, nanoseconds);
+        return [time, documentId(id)];
+      }
+    } catch { /* Невалидный курсор. */ }
+  }
+  return bad('Некорректная позиция журнала');
+}
+
+async function logs(req, db) {
+  let query = db.collection('logs').select('ts', 'name', 'action', 'target', 'details')
+    .orderBy('ts', 'desc').orderBy(FieldPath.documentId(), 'desc');
+  if (req.query.after !== undefined) query = query.startAfter(...logCursor(req.query.after));
+
+  const { docs } = await query.limit(LOG_PAGE + 1).get();
+  const page = docs.slice(0, LOG_PAGE);
+  const items = page.map(doc => {
+    const log = doc.data();
+    return { ...log, ts: log.ts?.toMillis?.() ?? 0 };
+  });
+  if (docs.length <= LOG_PAGE) return { items, next: null };
+
+  const last = page.at(-1);
+  const time = last.get('ts');
+  // Полное время и ID различают записи с одинаковой отображаемой датой.
+  const next = Buffer.from(JSON.stringify([time?.seconds ?? null, time?.nanoseconds ?? null, last.id])).toString('base64url');
+  return { items, next };
 }
 
 /* ---------- Импорт из старой Google Таблицы ---------- */
 async function importSheet(req, db, me) {
-  if (req.method !== 'POST') return notAllowed();
   if (!process.env.SHEET_URL) bad('Не задана переменная SHEET_URL (адрес Apps Script)');
-  const r = await fetch(process.env.SHEET_URL, { redirect: 'follow' });
-  if (!r.ok) bad(`Таблица не отвечает (HTTP ${r.status})`);
-  const raw = await r.json();
-  if (!Array.isArray(raw)) bad('Таблица вернула неверный формат данных');
+  let raw;
+  try {
+    const r = await fetch(process.env.SHEET_URL, { signal: AbortSignal.timeout(15000) });
+    if (!r.ok) throw new HttpError(502, `Таблица не отвечает (HTTP ${r.status})`);
+    raw = await r.json();
+  } catch (error) {
+    if (error instanceof HttpError) throw error;
+    throw new HttpError(502, 'Не удалось получить данные из таблицы');
+  }
+  if (!Array.isArray(raw)) throw new HttpError(502, 'Таблица вернула неверный формат данных');
 
   const pick = (x, ...keys) => { for (const k of keys) if (x[k] != null && String(x[k]).trim()) return String(x[k]).trim(); return ''; };
-  const rows = [];
+  const rows = new Map();
   let skipped = 0;
   for (const x of raw) {
     try {
@@ -165,49 +229,70 @@ async function importSheet(req, db, me) {
       if (!date) throw new Error('date');
       const time = formatTime(x['Время']);
       const color = pick(x, 'Цвет').toLowerCase();
-      rows.push({
-        ...cleanEvent({ title: pick(x, 'Название', 'Название события') || 'Без названия', date: toKey(date), time: TIME.test(time) ? time : '', description: pick(x, 'Описание'), category: color.startsWith('#') ? '' : slug(color) }),
+      const category = color.startsWith('#') || !color ? '' : documentId(slug(color));
+      const data = {
+        ...cleanEvent({ title: pick(x, 'Название', 'Название события') || 'Без названия',
+          date: toKey(date), time: TIME.test(time) ? time : '', description: pick(x, 'Описание'), category }),
         color: /^#[0-9a-f]{6}$/i.test(color) ? color : '',
-      });
+      };
+      // Keep the identity used by previous imports, so reruns do not create duplicate documents.
+      const id = 'imp_' + hash(`${data.date}|${data.time}|${data.title}`).toString(36);
+      rows.set(id, data);
     } catch { skipped++; }
   }
 
-  const have = new Set((await db.collection('categories').get()).docs.map(d => d.id));
   const ops = [];
-  for (const w of new Set(rows.map(r => r.category).filter(Boolean))) {
-    if (!have.has(w)) ops.push(b => b.set(db.collection('categories').doc(w), { label: w.charAt(0).toUpperCase() + w.slice(1), color: CATEGORIES[w]?.color ?? PALETTE[hash(w) % PALETTE.length] }));
+  const assigned = new Set([...rows.values()].map(r => r.category).filter(Boolean));
+  if (assigned.size) {
+    const have = new Set((await readCategories({ fresh: true })).map(c => c.id));
+    for (const id of assigned) {
+      if (have.has(id)) continue;
+      const label = id.charAt(0).toUpperCase() + id.slice(1);
+      const color = CATEGORIES[id]?.color ?? PALETTE[hash(id) % PALETTE.length];
+      ops.push(batch => batch.set(db.collection('categories').doc(id), { label, color }));
+    }
   }
-  for (const e of rows) {
-    // Одинаковые строки получают одинаковый id — повторный импорт не создаёт дублей
-    const ref = db.collection('events').doc('imp_' + hash(`${e.date}|${e.time}|${e.title}`).toString(36));
-    ops.push(b => b.set(ref, { ...e, seriesId: '', createdBy: me.id, createdByName: me.name, createdAt: FieldValue.serverTimestamp(), ...stamp(me) }));
+  const categoriesCreated = ops.length > 0;
+  for (const [id, event] of rows) {
+    const ref = db.collection('events').doc(id);
+    ops.push(batch => batch.set(ref, { ...event, seriesId: '', createdBy: me.id, createdByName: me.name, createdAt: FieldValue.serverTimestamp(), ...stamp(me) }));
   }
-  for (let i = 0; i < ops.length; i += 400) {
-    const batch = db.batch();
-    ops.slice(i, i + 400).forEach(op => op(batch));
-    await batch.commit();
+  ops.push(batch => log(batch, db, me, 'import', 'Google Таблица', `${rows.size} событий`));
+  try {
+    for (let i = 0; i < ops.length; i += 400) {
+      const batch = db.batch();
+      ops.slice(i, i + 400).forEach(op => op(batch));
+      await batch.commit();
+    }
+  } finally {
+    // Earlier batches may already have committed even if a later write fails.
+    if (categoriesCreated) clearCategoryReads();
+    if (rows.size) clearEventReads();
   }
-  const batch = db.batch();
-  log(batch, db, me, 'import', 'Google Таблица', `${rows.length} событий`);
-  await batch.commit();
-  return { imported: rows.length, skipped };
+  return { imported: rows.size, skipped };
 }
 
 const routes = {
-  events: { roles: STAFF, run: events },
-  month: { roles: STAFF, run: month },
-  categories: { roles: STAFF, run: categories },
-  users: { roles: ['admin'], run: users },
-  logs: { roles: ['admin'], run: logs },
-  import: { roles: ['admin'], run: importSheet },
+  events: { roles: STAFF, methods: ['GET', 'POST', 'PUT', 'DELETE'], run: events },
+  month: { roles: STAFF, methods: ['GET'], run: month },
+  categories: { roles: STAFF, methods: ['GET', 'POST', 'PUT', 'DELETE'], adminWrites: true, run: categories },
+  users: { roles: ADMIN, methods: ['GET', 'PATCH', 'DELETE'], run: users },
+  logs: { roles: ADMIN, methods: ['GET'], run: logs },
+  import: { roles: ADMIN, methods: ['POST'], run: importSheet },
 };
 
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
   try {
-    const route = Object.hasOwn(routes, req.query.res) ? routes[req.query.res] : null;
+    const routeName = req.query?.res;
+    const route = typeof routeName === 'string' && Object.hasOwn(routes, routeName) ? routes[routeName] : null;
     if (!route) throw new HttpError(404, 'Не найдено');
-    const me = await guard(req, route.roles);
+    if (!route.methods.includes(req.method)) {
+      res.setHeader('Allow', route.methods.join(', '));
+      throw new HttpError(405, 'Метод не поддерживается');
+    }
+    const roles = route.adminWrites && req.method !== 'GET' ? ADMIN : route.roles;
+    const me = await guard(req, roles);
     return send(res, 200, await route.run(req, getDb(), me));
   } catch (e) { return handleError(res, e); }
 }

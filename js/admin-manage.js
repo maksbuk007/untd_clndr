@@ -1,61 +1,163 @@
 // Пользователи, категории, журнал, импорт (только для администратора)
-import { h, call, toast, fail, confirmDlg, lazy, avatar, app } from './ui.js';
+import { h, call, toast, fail, confirmDlg, lazy, avatar } from './ui.js';
 import { ME } from './session.js';
 
 const ROLES = { pending: 'Ожидает', moderator: 'Модератор', admin: 'Администратор' };
 const ACTIONS = { create: 'Создал событие', update: 'Изменил событие', delete: 'Удалил событие', role: 'Сменил роль', 'user-del': 'Удалил пользователя', 'cat-save': 'Сохранил категорию', 'cat-del': 'Удалил категорию', import: 'Импортировал данные' };
 
-const run = async (fn, okMessage) => {
-  try { await fn(); if (okMessage) toast(okMessage); } catch (e) { fail(e); }
-  app.reload();
-};
-
 export const viewUsers = () => lazy(async () => {
   const rank = u => ({ pending: 0, admin: 1, moderator: 2 })[u.role] ?? 3;
-  const users = (await call('/api/admin/users')).items.sort((a, b) => rank(a) - rank(b) || (a.name || '').localeCompare(b.name || '', 'ru'));
-  const waiting = users.filter(u => u.role === 'pending').length;
+  const users = new Map((await call('/api/admin/users')).items.map(u => [u.id, u]));
+  const pending = new Set();
+  const notice = h('p', { class: 'note' });
+  const rows = h('div', { class: 'rows' });
 
-  return h('div', {},
-    waiting ? h('p', { class: 'note' }, `Ожидают подтверждения: ${waiting}. Назначьте им роль «Модератор».`) : null,
-    h('div', { class: 'rows' }, users.map(u => {
-      const self = u.id === ME.user.id;
-      return h('div', { class: 'row user' },
-        avatar(u),
-        h('div', { class: 'row-main' }, h('strong', {}, u.name || 'Без имени', self && h('span', { class: 'muted' }, ' (вы)')), h('small', { class: 'muted' }, u.email)),
-        h('div', { class: 'row-actions' },
-          h('select', { class: 'input', disabled: self, 'aria-label': 'Роль', onchange: e => run(() => call(`/api/admin/users?id=${u.id}`, { method: 'PATCH', body: { role: e.target.value } }), 'Роль изменена') },
-            ...Object.entries(ROLES).map(([v, label]) => h('option', { value: v, selected: u.role === v }, label))),
-          h('button', { class: 'btn small danger', disabled: self, onclick: async () => {
-            if (await confirmDlg(`Удалить пользователя ${u.name}? Он потеряет доступ.`)) run(() => call(`/api/admin/users?id=${u.id}`, { method: 'DELETE' }), 'Пользователь удалён');
-          } }, 'Удалить')));
-    })));
+  async function change(user, role, controls) {
+    if (pending.has(user.id)) return;
+    pending.add(user.id);
+    controls.forEach(control => { control.disabled = true; });
+    try {
+      await call(`/api/admin/users?id=${encodeURIComponent(user.id)}`, role
+        ? { method: 'PATCH', body: { role } } : { method: 'DELETE' });
+      if (role) user.role = role;
+      else users.delete(user.id);
+      toast(role ? 'Роль изменена' : 'Пользователь удалён');
+    } catch (e) { fail(e); }
+    finally { pending.delete(user.id); draw(); }
+  }
+
+  function row(user) {
+    const self = user.id === ME.user?.id;
+    const disabled = self || pending.has(user.id);
+    const name = user.name || user.email || 'Без имени';
+    const roles = h('select', { class: 'input', disabled, 'aria-label': `Роль: ${name}`, onchange: () => change(user, roles.value, [roles, remove]) },
+      ...Object.entries(ROLES).map(([value, label]) => h('option', { value, selected: user.role === value }, label)));
+    const remove = h('button', { class: 'btn small danger', disabled, onclick: async () => {
+      if (await confirmDlg(`Удалить пользователя ${name}? Он потеряет доступ.`)) change(user, null, [roles, remove]);
+    } }, 'Удалить');
+    return h('div', { class: 'row user' }, avatar(user),
+      h('div', { class: 'row-main' }, h('strong', {}, name, self && h('span', { class: 'muted' }, ' (вы)')), h('small', { class: 'muted' }, user.email)),
+      h('div', { class: 'row-actions' }, roles, remove));
+  }
+
+  function draw() {
+    const sorted = [...users.values()].sort((a, b) => rank(a) - rank(b) || (a.name || '').localeCompare(b.name || '', 'ru'));
+    const waiting = sorted.filter(u => u.role === 'pending').length;
+    notice.hidden = !waiting;
+    notice.textContent = `Ожидают подтверждения: ${waiting}. Для доступа назначьте роль.`;
+    rows.replaceChildren(...sorted.map(row));
+  }
+
+  draw();
+  return h('div', {}, notice, rows);
 });
 
 export const viewCats = () => lazy(async () => {
-  const cats = (await call('/api/admin/categories')).items.sort((a, b) => a.label.localeCompare(b.label, 'ru'));
-  const name = h('input', { class: 'input', placeholder: 'Название категории', maxlength: 60, required: true });
+  const cats = new Map((await call('/api/admin/categories')).items.map(c => [c.id, c]));
+  const pending = new Set();
+  const name = h('input', { class: 'input', placeholder: 'Название категории', 'aria-label': 'Название категории', maxlength: 60, required: true });
   const color = h('input', { class: 'color', type: 'color', value: '#2563eb', 'aria-label': 'Цвет' });
+  const add = h('button', { class: 'btn primary', type: 'submit' }, 'Добавить');
+  const note = h('p', { class: 'note' }, 'Пока используются стандартные категории. Здесь можно добавить свои.');
+  const rows = h('div', { class: 'rows' });
 
-  return h('div', {},
-    h('form', { class: 'toolbar', onsubmit: e => { e.preventDefault(); run(() => call('/api/admin/categories', { method: 'POST', body: { label: name.value, color: color.value } }), 'Категория добавлена'); } },
-      name, color, h('button', { class: 'btn primary', type: 'submit' }, 'Добавить')),
-    cats.length ? null : h('p', { class: 'note' }, 'Своих категорий пока нет — используются стандартные. Добавьте первую, и список станет вашим (или сделайте импорт: он создаст категории сам).'),
-    h('div', { class: 'rows' }, cats.map(c => h('div', { class: 'row cat' },
-      h('input', { class: 'color', type: 'color', value: c.color, 'aria-label': `Цвет: ${c.label}`, onchange: e => run(() => call(`/api/admin/categories?id=${encodeURIComponent(c.id)}`, { method: 'PUT', body: { label: c.label, color: e.target.value } })) }),
-      h('div', { class: 'row-main' }, h('strong', {}, c.label)),
-      h('button', { class: 'btn small danger', onclick: async () => {
-        if (await confirmDlg(`Удалить категорию «${c.label}»? События с ней останутся, но потеряют цвет.`)) run(() => call(`/api/admin/categories?id=${encodeURIComponent(c.id)}`, { method: 'DELETE' }), 'Категория удалена');
-      } }, 'Удалить')))));
+  async function create(event) {
+    event.preventDefault();
+    if (add.disabled) return;
+    const label = name.value.trim();
+    if (!label) { name.value = ''; return name.reportValidity(); }
+    add.disabled = true;
+    try {
+      const response = await call('/api/admin/categories', { method: 'POST', body: { label, color: color.value } });
+      cats.set(response.category.id, response.category);
+      if (name.value.trim() === label) name.value = '';
+      toast('Категория добавлена');
+      draw();
+    } catch (e) { fail(e); }
+    finally { add.disabled = false; }
+  }
+
+  async function change(category, newColor, controls) {
+    if (pending.has(category.id)) return;
+    pending.add(category.id);
+    controls.forEach(control => { control.disabled = true; });
+    try {
+      await call(`/api/admin/categories?id=${encodeURIComponent(category.id)}`, newColor
+        ? { method: 'PUT', body: { label: category.label, color: newColor } } : { method: 'DELETE' });
+      if (newColor) category.color = newColor;
+      else { cats.delete(category.id); toast('Категория удалена'); }
+    } catch (e) { fail(e); }
+    finally { pending.delete(category.id); draw(); }
+  }
+
+  function row(category) {
+    const disabled = pending.has(category.id);
+    const swatch = h('input', { class: 'color', type: 'color', value: category.color, disabled, 'aria-label': `Цвет: ${category.label}`,
+      onchange: () => change(category, swatch.value, [swatch, remove]) });
+    const remove = h('button', { class: 'btn small danger', disabled, onclick: async () => {
+      if (await confirmDlg(`Удалить категорию «${category.label}»? События сохранятся.`)) change(category, null, [swatch, remove]);
+    } }, 'Удалить');
+    return h('div', { class: 'row cat' }, swatch, h('div', { class: 'row-main' }, h('strong', {}, category.label)), remove);
+  }
+
+  function draw() {
+    note.hidden = cats.size > 0;
+    rows.replaceChildren(...[...cats.values()].sort((a, b) => (a.label || '').localeCompare(b.label || '', 'ru')).map(row));
+  }
+
+  draw();
+  return h('div', {}, h('form', { class: 'toolbar', onsubmit: create }, name, color, add), note, rows);
 });
 
 export const viewLogs = () => lazy(async () => {
-  const logs = (await call('/api/admin/logs')).items;
+  const first = await call('/api/admin/logs');
+  if (!first.items.length) return h('p', { class: 'empty' }, 'Записей пока нет');
+
   const fmt = new Intl.DateTimeFormat('ru-RU', { dateStyle: 'short', timeStyle: 'short' });
-  return h('div', { class: 'rows' }, logs.length ? logs.map(l => h('div', { class: 'row log' },
+  const row = l => h('div', { class: 'row log' },
     h('div', { class: 'row-date' }, l.ts ? fmt.format(l.ts) : '—'),
     h('div', { class: 'row-main' },
       h('span', {}, h('strong', {}, l.name), ` — ${ACTIONS[l.action] ?? l.action}`),
-      h('span', {}, l.target, l.details && h('span', { class: 'muted' }, ` · ${l.details}`))))) : [h('p', { class: 'empty' }, 'Записей пока нет')]);
+      h('span', {}, l.target, l.details && h('span', { class: 'muted' }, ` · ${l.details}`))));
+  const rows = h('div', { class: 'rows' }, first.items.map(row));
+  const error = h('p', { class: 'form-error', role: 'alert' });
+  let next = first.next;
+  let loading = false;
+  const more = h('button', { class: 'btn', type: 'button', onclick: loadMore }, 'Показать ещё');
+  const controls = h('div', { class: 'more', hidden: !next }, more);
+
+  async function loadMore() {
+    if (loading || !next) return;
+    loading = true;
+    error.textContent = '';
+    more.textContent = 'Загружаем…';
+    more.setAttribute('aria-disabled', 'true');
+    rows.setAttribute('aria-busy', 'true');
+    try {
+      const page = await call(`/api/admin/logs?${new URLSearchParams({ after: next })}`);
+      if (!rows.isConnected) return;
+      const added = page.items.map(row);
+      rows.append(...added);
+      next = page.next;
+      if (added.length && document.activeElement === more) {
+        added[0].tabIndex = -1;
+        added[0].focus();
+      }
+      controls.hidden = !next;
+      more.textContent = 'Показать ещё';
+    } catch (e) {
+      if (!rows.isConnected) return;
+      if (e.status === 401) return fail(e);
+      error.textContent = 'Не удалось загрузить следующие записи.';
+      more.textContent = 'Повторить';
+    } finally {
+      loading = false;
+      more.removeAttribute('aria-disabled');
+      rows.setAttribute('aria-busy', 'false');
+    }
+  }
+
+  return h('div', {}, rows, error, controls);
 });
 
 export function viewImport() {
