@@ -1,5 +1,5 @@
 import { CATEGORIES } from './config.js';
-import { el, colorOf, groupOf, groupColor, groupLabel, whenFull, relDay } from './utils.js';
+import { el, eventColor, groupOf, groupColor, groupLabel, whenFull, relDay } from './utils.js';
 
 const monthShort = new Intl.DateTimeFormat('ru-RU', { month: 'short' });
 
@@ -39,7 +39,7 @@ export function renderNext(root, ev, onSelect, { today, emptyMessage }) {
   if (!ev) return emptyMessage ? root.replaceChildren(el('p', 'empty', emptyMessage)) : root.replaceChildren();
   const card = el('button', 'next-card');
   card.type = 'button';
-  card.style.setProperty('--c', colorOf(ev.color));
+  card.style.setProperty('--c', eventColor(ev));
   const label = ev.date < today ? 'Продолжается сегодня' : `Ближайшее · ${relDay(ev.date, today)}`;
   card.append(el('span', 'next-label', label), el('span', 'next-title', ev.title), el('span', 'next-when', whenFull(ev)));
   card.addEventListener('click', () => onSelect(ev));
@@ -51,7 +51,7 @@ export function renderAgenda(root, events, onSelect) {
   root.replaceChildren(...events.map(ev => {
     const item = el('button', 'agenda-item');
     item.type = 'button';
-    item.style.setProperty('--c', colorOf(ev.color));
+    item.style.setProperty('--c', eventColor(ev));
     const badge = el('span', 'agenda-badge');
     badge.append(el('b', null, ev.date.getDate()), el('i', null, monthShort.format(ev.date).replace('.', '')));
     const body = el('span', 'agenda-body');

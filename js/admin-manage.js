@@ -1,6 +1,7 @@
 // Пользователи, категории, журнал, импорт (только для администратора)
-import { h, call, toast, fail, confirmDlg, lazy, avatar } from './ui.js';
+import { h, call, toast, fail, confirmDlg, lazy, avatar, field, openDlg, closeDlg } from './ui.js';
 import { ME } from './session.js';
+import { colorOf, setCategories } from './utils.js';
 
 const ROLES = { pending: 'Ожидает', moderator: 'Модератор', admin: 'Администратор' };
 const ACTIONS = { create: 'Создал событие', update: 'Изменил событие', delete: 'Удалил событие', role: 'Сменил роль', 'user-del': 'Удалил пользователя', 'cat-save': 'Сохранил категорию', 'cat-del': 'Удалил категорию', import: 'Импортировал данные' };
@@ -54,50 +55,88 @@ export const viewUsers = () => lazy(async () => {
 
 export const viewCats = () => lazy(async () => {
   const cats = new Map((await call('/api/admin/categories')).items.map(c => [c.id, c]));
-  const pending = new Set();
-  const name = h('input', { class: 'input', placeholder: 'Название категории', 'aria-label': 'Название категории', maxlength: 60, required: true });
-  const color = h('input', { class: 'color', type: 'color', value: '#2563eb', 'aria-label': 'Цвет' });
-  const add = h('button', { class: 'btn primary', type: 'submit' }, 'Добавить');
+  let busy = false;
+  const add = h('button', { class: 'btn primary', type: 'button', onclick: () => edit() }, 'Новая категория');
   const note = h('p', { class: 'note' }, 'Пока используются стандартные категории. Здесь можно добавить свои.');
   const rows = h('div', { class: 'rows' });
 
-  async function create(event) {
-    event.preventDefault();
-    if (add.disabled) return;
-    const label = name.value.trim();
-    if (!label) { name.value = ''; return name.reportValidity(); }
-    add.disabled = true;
-    try {
-      const response = await call('/api/admin/categories', { method: 'POST', body: { label, color: color.value } });
-      cats.set(response.category.id, response.category);
-      if (name.value.trim() === label) name.value = '';
-      toast('Категория добавлена');
-      draw();
-    } catch (e) { fail(e); }
-    finally { add.disabled = false; }
+  function setBusy(active) {
+    busy = active;
+    add.disabled = active;
+    rows.querySelectorAll('button').forEach(button => { button.disabled = active; });
   }
 
-  async function change(category, newColor, controls) {
-    if (pending.has(category.id)) return;
-    pending.add(category.id);
-    controls.forEach(control => { control.disabled = true; });
+  function edit(category) {
+    if (busy) return;
+    const colorValue = /^#[0-9a-f]{6}$/i.test(category?.color) ? category.color : '#2563eb';
+    const name = h('input', { class: 'input', name: 'label', value: category?.label || '', maxlength: 60, required: true });
+    const color = h('input', { class: 'color', type: 'color', name: 'color', value: colorValue });
+    const error = h('p', { class: 'form-error', role: 'alert' });
+    const action = category ? 'Сохранить' : 'Добавить';
+    const submit = h('button', { class: 'btn primary', type: 'submit' }, action);
+    const form = h('form', { class: 'form category-form', onsubmit: save },
+      h('div', { class: 'category-fields' }, field('Название', name), field('Цвет', color)), error,
+      h('div', { class: 'dlg-actions' }, h('button', { class: 'btn', type: 'button', onclick: closeDlg }, 'Отмена'), submit));
+
+    async function save(event) {
+      event.preventDefault();
+      if (busy) return;
+      const label = name.value.trim();
+      if (!label) { name.value = ''; return name.reportValidity(); }
+      if (label === category?.label && color.value === category.color?.toLowerCase()) return closeDlg();
+
+      error.textContent = '';
+      submit.textContent = 'Сохраняем…';
+      submit.disabled = true;
+      setBusy(true);
+      let saved;
+      try {
+        const body = { label, color: color.value };
+        const query = category ? `?${new URLSearchParams({ id: category.id })}` : '';
+        if (category) body.previous = { label: category.label, color: category.color };
+        saved = (await call(`/api/admin/categories${query}`, { method: category ? 'PUT' : 'POST', body })).category;
+        if (!saved?.id) throw new Error('Сервер не вернул обновлённую категорию.');
+      } catch (e) {
+        if (e.status === 401) return fail(e);
+        error.textContent = e.message;
+        return;
+      } finally {
+        setBusy(false);
+        submit.disabled = false;
+        submit.textContent = action;
+      }
+      const dialogOpen = form.closest('dialog')?.open;
+      if (dialogOpen) closeDlg();
+      cats.set(saved.id, saved);
+      setCategories([...cats.values()]);
+      draw();
+      if (dialogOpen && category) rows.querySelector(`button[data-category-edit="${CSS.escape(saved.id)}"]`)?.focus({ preventScroll: true });
+      toast(category ? 'Изменения сохранены' : 'Категория добавлена');
+    }
+
+    openDlg(category ? 'Изменить категорию' : 'Новая категория', form);
+  }
+
+  async function remove(category, label) {
+    if (busy || !await confirmDlg(`Удалить категорию «${label}»? События сохранятся.`)) return;
+    setBusy(true);
     try {
-      await call(`/api/admin/categories?id=${encodeURIComponent(category.id)}`, newColor
-        ? { method: 'PUT', body: { label: category.label, color: newColor } } : { method: 'DELETE' });
-      if (newColor) category.color = newColor;
-      else { cats.delete(category.id); toast('Категория удалена'); }
+      await call(`/api/admin/categories?${new URLSearchParams({ id: category.id })}`, { method: 'DELETE' });
+      cats.delete(category.id);
+      setCategories([...cats.values()]);
+      draw();
+      toast('Категория удалена');
     } catch (e) { fail(e); }
-    finally { pending.delete(category.id); draw(); }
+    finally { setBusy(false); }
   }
 
   function row(category) {
-    const disabled = pending.has(category.id);
-    const swatch = h('input', { class: 'color', type: 'color', value: category.color, disabled, 'aria-label': `Цвет: ${category.label}`,
-      onchange: () => change(category, swatch.value, [swatch, remove]) });
-    const remove = h('button', { class: 'btn small danger', disabled, onclick: async () => {
-      if (await confirmDlg(`Удалить категорию «${category.label}»? События сохранятся.`)) change(category, null, [swatch, remove]);
-    } }, 'Удалить');
-    return h('div', { class: 'row cat' }, swatch, h('div', { class: 'row-main' }, h('strong', {}, category.label)), remove);
+    const { id } = category;
+    const label = category.label || 'Без названия';
+    const swatch = h('span', { class: 'category-swatch', 'aria-hidden': 'true', vars: { '--c': colorOf(category.color || id.toLowerCase()) } });
+    const modify = h('button', { class: 'btn small', type: 'button', 'data-category-edit': id, disabled: busy, onclick: () => edit(category) }, 'Изменить');
+    const del = h('button', { class: 'btn small danger', type: 'button', disabled: busy, onclick: () => remove(category, label) }, 'Удалить');
+    return h('div', { class: 'row cat' }, swatch, h('div', { class: 'row-main' }, h('strong', {}, label)), h('div', { class: 'row-actions' }, modify, del));
   }
 
   function draw() {
@@ -106,7 +145,7 @@ export const viewCats = () => lazy(async () => {
   }
 
   draw();
-  return h('div', {}, h('form', { class: 'toolbar', onsubmit: create }, name, color, add), note, rows);
+  return h('div', {}, h('div', { class: 'toolbar cat-toolbar' }, add), note, rows);
 });
 
 export const viewLogs = () => lazy(async () => {

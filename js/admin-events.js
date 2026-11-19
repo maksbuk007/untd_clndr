@@ -2,7 +2,7 @@
 import { h, field, call, toast, fail, openDlg, closeDlg, confirmDlg, skeletons } from './ui.js';
 import { CATEGORIES, DEFAULT_COLOR } from './config.js';
 import { addDays, calendarToday, groupByDay, isCalendarMonth, isRealDate, MAX_REPEATS, monthKey, monthStart, repeatDates, toKey } from './dates.js';
-import { capitalize, colorOf, compareEvents, groupLabel, toEvent, whenText, setCategories } from './utils.js';
+import { capitalize, colorOf, compareEvents, eventColor, groupLabel, groupOf, toEvent, whenText, setCategories } from './utils.js';
 import { renderGrid } from './calendar.js';
 
 const monthFmt = new Intl.DateTimeFormat('ru-RU', { month: 'long', year: 'numeric' });
@@ -161,7 +161,7 @@ export async function removeEvent(ev, onDone) {
 const copyOf = ev => ({ ...ev, id: undefined, seriesId: '' });
 
 function eventCard(ev, onChange) {
-  return h('article', { class: 'ev', vars: { '--c': colorOf(ev.color || ev.category) } },
+  return h('article', { class: 'ev', vars: { '--c': eventColor(ev) } },
     h('div', { class: 'ev-time' }, whenText(ev), ev.seriesId && ' · повторяется'),
     h('h3', { class: 'ev-title' }, ev.title),
     ev.description && h('p', { class: 'ev-desc' }, ev.description),
@@ -271,7 +271,8 @@ export function viewList() {
   let failedAppend = false;
   let categoriesReady = false;
   const rows = h('div', { class: 'rows' });
-  const more = h('button', { class: 'btn', hidden: true, onclick: () => page(true) }, 'Показать ещё');
+  const more = h('button', { class: 'btn', type: 'button', onclick: () => page(true) }, 'Показать ещё');
+  const moreControls = h('div', { class: 'more', hidden: true }, more);
   const status = loadStatus(() => page(failedAppend));
   const note = h('p', { class: 'hint', hidden: true }, 'Поиск и фильтр действуют на загруженные события. Можно показать ещё.');
   const modes = [[false, 'С сегодняшнего дня'], [true, 'Начались раньше']].map(([mode, label]) =>
@@ -286,7 +287,7 @@ export function viewList() {
 
   function drawCategories() {
     const chosen = select.value;
-    const known = new Set([...Object.keys(CATEGORIES), ...current.items.map(e => e.category).filter(Boolean), ...(chosen ? [chosen] : [])]);
+    const known = new Set([...Object.keys(CATEGORIES), ...current.items.map(groupOf), ...(chosen ? [chosen] : [])]);
     select.replaceChildren(h('option', { value: '' }, 'Все категории'), ...[...known].map(id => h('option', { value: id }, groupLabel(id))));
     select.value = chosen;
   }
@@ -313,6 +314,7 @@ export function viewList() {
     if (append) { p.set('afterDate', current.next.date); p.set('afterId', current.next.id); }
     busy = true;
     draw();
+    let focusIndex;
     try {
       const r = await call('/api/admin/events?' + p);
       if (t !== token || !rows.isConnected) return;
@@ -321,6 +323,7 @@ export function viewList() {
         categoriesReady = true;
       }
       const items = r.items.map(toEvent).filter(Boolean);
+      if (append && document.activeElement === more) focusIndex = rows.querySelectorAll('.row.event').length;
       const combined = new Map((append ? [...current.items, ...items] : items).map(ev => [ev.id, ev]));
       current = { key, items: [...combined.values()], next: r.next, fetchedAt: append ? current.fetchedAt : Date.now() };
       pages.set(key, current);
@@ -336,6 +339,11 @@ export function viewList() {
       if (t === token && rows.isConnected) {
         busy = false;
         draw();
+        const focusRow = focusIndex === undefined ? null : rows.querySelectorAll('.row.event')[focusIndex];
+        if (focusRow) {
+          focusRow.tabIndex = -1;
+          focusRow.focus();
+        }
       }
     }
   }
@@ -344,14 +352,15 @@ export function viewList() {
     const q = search.value.trim().toLowerCase();
     const cat = select.value;
     rows.setAttribute('aria-busy', String(busy));
-    more.hidden = !current?.next;
-    more.disabled = busy;
+    moreControls.hidden = !current?.next;
+    more.setAttribute('aria-disabled', String(busy));
+    more.textContent = busy ? 'Загружаем…' : 'Показать ещё';
     note.hidden = !(current?.next && (q || cat));
     if (!current) {
       rows.replaceChildren(...(busy ? skeletons() : []));
       return;
     }
-    const items = current.items.filter(e => (!q || e.title.toLowerCase().includes(q)) && (!cat || e.category === cat));
+    const items = current.items.filter(e => (!q || e.title.toLowerCase().includes(q)) && (!cat || groupOf(e) === cat));
     const empty = current.next && (q || cat) ? 'Среди загруженных событий совпадений нет' : 'Событий не найдено';
     rows.replaceChildren(...(items.length ? items.map(row) : [h('p', { class: 'empty' }, empty)]));
   }
@@ -360,11 +369,13 @@ export function viewList() {
     pages.clear();
     if (rows.isConnected) page(false);
   }
-  const row = ev => h('div', { class: 'row' },
+  const row = ev => h('div', { class: 'row event' },
     h('div', { class: 'row-date' }, dmy(ev.key), h('small', {}, ev.endKey !== ev.key ? `до ${dmy(ev.endKey)}` : ev.time ? whenText(ev) : 'весь день')),
     h('div', { class: 'row-main' },
       h('strong', {}, ev.title),
-      h('span', { class: 'tag', vars: { '--c': colorOf(ev.color || ev.category) } }, ev.category ? groupLabel(ev.category) : 'Другое', ev.seriesId && ' · повтор'),
+      h('div', { class: 'event-meta' },
+        h('span', { class: 'tag', vars: { '--c': eventColor(ev) } }, h('span', { class: 'tag-label' }, groupLabel(groupOf(ev)))),
+        ev.seriesId && h('span', { class: 'repeat-label muted' }, 'Повторяется')),
       h('small', { class: 'muted' }, `Изменил: ${ev.updatedByName || '—'}`)),
     h('div', { class: 'row-actions' },
       h('button', { class: 'btn small', onclick: () => eventForm(ev, afterMutation) }, 'Изменить'),
@@ -374,8 +385,8 @@ export function viewList() {
   select.append(h('option', { value: '' }, 'Все категории'), ...Object.entries(CATEGORIES).map(([id, c]) => h('option', { value: id }, c.label)));
   page(false);
   return h('div', {},
-    h('div', { class: 'toolbar' }, h('div', { class: 'seg', role: 'group', 'aria-label': 'Дата начала' }, modes), search, select,
+    h('div', { class: 'toolbar event-toolbar' }, h('div', { class: 'seg', role: 'group', 'aria-label': 'Дата начала' }, modes), search, select,
       h('button', { class: 'btn primary', onclick: () => eventForm({ key: toKey(calendarToday()) }, afterMutation) }, '+ Событие')),
     status.root, note,
-    rows, h('div', { class: 'more' }, more));
+    rows, moreControls);
 }

@@ -32,6 +32,7 @@ export function setCategories(list) {
 }
 
 export const colorOf = c => (isHex(c) ? c : CATEGORIES[c]?.color ?? (c ? hashColor(c) : DEFAULT_COLOR));
+export const eventColor = ev => CATEGORIES[ev.category]?.color ?? colorOf(ev.color || ev.category);
 export const groupOf = ev => ev.category || (ev.color && !isHex(ev.color) ? ev.color : 'другое');
 export const groupColor = g => (g === 'другое' ? DEFAULT_COLOR : colorOf(g));
 export const groupLabel = g => CATEGORIES[g]?.label ?? capitalize(g);

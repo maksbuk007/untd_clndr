@@ -1,11 +1,11 @@
-import { el, colorOf, linkify, capitalize, whenText } from './utils.js';
+import { el, eventColor, linkify, capitalize, whenText } from './utils.js';
 import { calendarToday } from './dates.js';
 
 const titleFmt = new Intl.DateTimeFormat('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' });
 
 function card(ev) {
   const item = el('article', 'ev');
-  item.style.setProperty('--c', colorOf(ev.color));
+  item.style.setProperty('--c', eventColor(ev));
   item.append(el('div', 'ev-time', whenText(ev)), el('h3', 'ev-title', ev.title));
   if (ev.description) {
     const desc = el('p', 'ev-desc');

@@ -1,4 +1,5 @@
 // Всё управление: события, пользователи, категории, журнал, импорт. Права проверяются здесь, на сервере.
+import { randomUUID } from 'node:crypto';
 import { getDb, FieldPath, FieldValue, Timestamp } from '../../server/db.js';
 import { guard } from '../../server/auth.js';
 import { HttpError, bad, send, handleError } from '../../server/http.js';
@@ -10,7 +11,7 @@ import { CATEGORIES } from '../../js/config.js';
 const STAFF = ['moderator', 'admin'];
 const ADMIN = ['admin'];
 const ROLES = ['pending', 'moderator', 'admin'];
-const PAGE = 40;
+const EVENT_PAGE = 20;
 const PALETTE = ['#2563eb', '#059669', '#dc2626', '#d97706', '#7c3aed', '#0891b2', '#db2777', '#65a30d'];
 
 const slug = s => s.toLowerCase().replace(/\//g, ' ').slice(0, 60).trim();
@@ -48,12 +49,12 @@ async function events(req, db, me) {
       q = q.startAfter(day(req.query.afterDate), documentId(req.query.afterId));
     }
     const [snap, cats] = await Promise.all([
-      q.limit(PAGE + 1).get(),
+      q.limit(EVENT_PAGE + 1).get(),
       req.query.includeCategories === '1' ? readCategories() : null,
     ]);
-    const docs = snap.docs.slice(0, PAGE);
+    const docs = snap.docs.slice(0, EVENT_PAGE);
     const last = docs.at(-1);
-    const next = snap.docs.length > PAGE ? { date: last.get('date'), id: last.id } : null;
+    const next = snap.docs.length > EVENT_PAGE ? { date: last.get('date'), id: last.id } : null;
     return { items: docs.map(d => shapeEvent(d.id, d.data(), true)), next, ...(cats ? { categories: cats } : {}) };
   }
 
@@ -114,30 +115,65 @@ async function month(req) {
 }
 
 /* ---------- Категории ---------- */
+const categoryName = label => (typeof label === 'string' ? label.normalize().trim().toLowerCase().replace(/\s+/g, ' ') : '');
+
 async function categories(req, db, me) {
   const col = db.collection('categories');
   if (req.method === 'GET') return { items: await readCategories({ fresh: true }) };
-
-  const b = req.body ?? {};
-  const batch = db.batch();
-  let category;
-  if (req.method === 'POST' || req.method === 'PUT') {
-    const label = String(b.label ?? '').trim().slice(0, 60);
-    const color = String(b.color ?? '');
-    if (!label) bad('Введите название категории');
-    if (!/^#[0-9a-fA-F]{6}$/.test(color)) bad('Некорректный цвет');
-    const id = documentId(req.method === 'PUT' ? req.query.id : slug(label));
-    category = { id, label, color };
-    batch.set(col.doc(id), { label, color });
-    log(batch, db, me, 'cat-save', label, color);
-  } else {
+  if (req.method === 'DELETE') {
     const id = documentId(req.query.id);
+    const batch = db.batch();
     batch.delete(col.doc(id));
     log(batch, db, me, 'cat-del', id);
+    await batch.commit();
+    clearCategoryReads();
+    return { ok: true };
   }
-  await batch.commit();
+
+  const body = req.body ?? {};
+  const label = typeof body.label === 'string' ? body.label.trim() : '';
+  const { color, previous } = body;
+  if (!label) bad('Введите название категории');
+  if (label.length > 60) bad('Название категории должно содержать не более 60 символов');
+  if (typeof color !== 'string' || !/^#[0-9a-f]{6}$/i.test(color)) bad('Некорректный цвет');
+  if (previous !== undefined && (!previous || typeof previous !== 'object' || Array.isArray(previous))) {
+    bad('Некорректные исходные данные категории');
+  }
+  const editing = req.method === 'PUT';
+  const id = documentId(editing ? req.query.id : slug(label));
+  const name = categoryName(label);
+
+  const category = await db.runTransaction(async transaction => {
+    let ref = col.doc(id);
+    let before;
+    if (editing) {
+      const snapshot = await transaction.get(ref);
+      if (!snapshot.exists) throw new HttpError(404, 'Категория не найдена');
+      before = snapshot.data();
+      if (previous && (before.label !== previous.label || before.color !== previous.color)) {
+        throw new HttpError(409, 'Категория уже изменена. Откройте вкладку заново и повторите попытку.');
+      }
+      if (before.label === label && before.color === color) return { id, label, color };
+    }
+
+    if (!editing || categoryName(before.label) !== name) {
+      const existing = await transaction.get(col.select('label'));
+      if (existing.docs.some(doc => (!editing || doc.id !== id) && categoryName(doc.get('label')) === name)) {
+        throw new HttpError(409, 'Категория с таким названием уже есть');
+      }
+      // После переименования исходный ID всё ещё принадлежит событиям старой категории.
+      if (!editing && existing.docs.some(doc => doc.id === id)) ref = col.doc(randomUUID());
+    }
+
+    if (editing) transaction.update(ref, { label, color });
+    else transaction.create(ref, { label, color });
+
+    const details = before?.label && before.label !== label ? `${before.label} → ${label} · ${color}` : color;
+    log(transaction, db, me, 'cat-save', label, details);
+    return { id: ref.id, label, color };
+  });
   clearCategoryReads();
-  return category ? { ok: true, category } : { ok: true };
+  return { ok: true, category };
 }
 
 /* ---------- Пользователи ---------- */

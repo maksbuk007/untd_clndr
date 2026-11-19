@@ -1,4 +1,4 @@
-import { el, colorOf } from './utils.js';
+import { el, eventColor } from './utils.js';
 import { calendarToday, toKey, gridBounds } from './dates.js';
 
 const dayFmt = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long' });
@@ -28,20 +28,22 @@ export function renderGrid(root, view, byDay, onSelect, { all = false } = {}) {
     if (!events.length) cell.classList.add('blank');
     if (all) cell.classList.add('addable');
     cell.setAttribute('aria-label', dayFmt.format(date) + (events.length ? `, событий: ${events.length}` : all ? ', добавить событие' : ''));
-    cell.append(el('span', 'day-num', date.getDate()));
+    const content = el('span', 'day-inner');
+    content.append(el('span', 'day-num', date.getDate()));
 
     if (events.length) {
       const box = el('span', 'pills');
       for (const ev of events.slice(0, MAX_PILLS)) {
         const pill = el('span', 'pill');
-        pill.style.setProperty('--c', colorOf(ev.color));
+        pill.style.setProperty('--c', eventColor(ev));
         if (ev.time && ev.key === key) pill.append(el('span', 'pill-time', ev.time));
         pill.append(el('span', 'pill-text', ev.title));
         box.append(pill);
       }
       if (events.length > MAX_PILLS) box.append(el('span', 'more', `+${events.length - MAX_PILLS}`));
-      cell.append(box);
+      content.append(box);
     }
+    cell.append(content);
     if (!cell.disabled) cell.addEventListener('click', () => onSelect(date, events));
     cells.push(cell);
   }
