@@ -135,10 +135,12 @@ button { cursor: pointer; }
 
 .pills { display: flex; flex-direction: column; gap: 4px; width: 100%; min-width: 0; }
 .pill {
+  --pill-accent: var(--c);
   display: flex; gap: 6px; min-width: 0; max-width: 100%; overflow: hidden;
   padding: 3px 8px; border-radius: 8px; font-size: 12px; font-weight: 600;
-  background: color-mix(in srgb, var(--c) 17%, transparent); box-shadow: inset 3px 0 0 var(--c);
+  background: color-mix(in srgb, var(--pill-accent) 17%, transparent); box-shadow: inset 3px 0 0 var(--pill-accent);
 }
+.day.other .pill { --pill-accent: color-mix(in srgb, var(--c) 55%, transparent); color: var(--muted); }
 .pill-time { color: var(--muted); font-variant-numeric: tabular-nums; flex: none; }
 .pill-text { flex: 1 1 0%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pills .more { font-size: 12px; font-weight: 700; color: var(--muted); text-align: center; }
@@ -241,7 +243,7 @@ dialog:not(#filter-modal) h2 { min-height: var(--control-size); margin-right: 0;
   .day-inner { gap: 3px; align-items: center; }
   .day-num { align-self: center; width: 26px; max-width: 100%; min-width: 0; height: 26px; }
   .pills { width: 100%; flex-direction: row; flex-wrap: wrap; justify-content: center; gap: 3px; }
-  .pill { width: 5px; height: 5px; padding: 0; border-radius: 50%; background: var(--c); box-shadow: none; }
+  .pill { width: 5px; height: 5px; padding: 0; border-radius: 50%; background: var(--pill-accent); box-shadow: none; }
   .pill-text { display: none; }
   .pills .more { flex: 1 1 100%; font-size: 10px; line-height: 1.1; }
 }
